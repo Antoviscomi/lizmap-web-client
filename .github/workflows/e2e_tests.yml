@@ -20,7 +20,7 @@ jobs:
     defaults:
       run:
         working-directory: .
-        shell: /bin/sh -e {0} # <-- CORREZIONE 1: Usa la shell /bin/sh
+        shell: /bin/sh -e {0} # <--- CORREZIONE 1: Usa la shell /bin/sh
     strategy:
       fail-fast: false
       matrix:
@@ -248,103 +248,4 @@ jobs:
         run: |
           npx playwright test --workers 1 --grep-invert "(?=.*@write|.*@readonly)" ${{ env.PLAYWRIGHT_OPTIONS }}
 
-      - name: Run Playwright tests tagged "@write"
-        id: test-playwright-write
-        working-directory: tests/end2end
-        env:
-          CRTF_JSON_FILE: playwright-tagged-write.json
-          PLAYWRIGHT_JSON_OUTPUT_NAME: tests-results-write.json
-        if: |
-          steps.qgis-server-status.outcome == 'success' &&
-          ( success() ||
-          steps.test-playwright-requests.outcome != 'success' ||
-          steps.test-playwright-read-only.outcome != 'success' ||
-          steps.test-playwright-no-tag.outcome != 'success' )
-        run: |
-          npx playwright test --workers 1 --grep @write ${{ env.PLAYWRIGHT_OPTIONS }}
-
-      - name: Debug
-        if: always()
-        working-directory: tests
-        run: |
-          find . -type d -name "test-results"
-          echo $GITHUB_WORKSPACE
-          echo ${{ github.workspace }}
-          echo ${{ github.workspace }}/tests/end2end/test-results/
-          ls -l $GITHUB_WORKSPACE/tests/end2end/test-results/
-          ls ${{ github.workspace }}/tests/end2end/test-results/
-
-      - name: Send screenshots if necessary about all Playwright tests, if one failed
-        if: |
-          failure() &&
-          ( steps.test-playwright-requests.outcome != 'success' ||
-          steps.test-playwright-read-only.outcome != 'success' ||
-          steps.test-playwright-no-tag.outcome != 'success' ||
-          steps.test-playwright-write.outcome != 'success' )
-        uses: actions/upload-artifact@master
-        with:
-          name: ${{ matrix.name }}-screenshots-readonly
-          if-no-files-found: 'ignore'
-          path: |
-            ${{ github.workspace }}/tests/end2end/test-results/
-
-      - name: Publish test report
-        continue-on-error: true
-        if: |
-          success() ||
-          steps.test-playwright-requests.outcome != 'success' ||
-          steps.test-playwright-read-only.outcome != 'success' ||
-          steps.test-playwright-no-tag.outcome != 'success' ||
-          steps.test-playwright-write.outcome != 'success'
-        uses: ctrf-io/github-test-reporter@v1.0.22
-        env:
-          GITHUB_TOKEN: ${{ secrets.BOT_HUB_TOKEN || github.token  }}
-        with:
-          report-path: './tests/end2end/ctrf/*.json'
-          summary-report: true
-          flaky-report: true
-          flaky-rate-report: true
-          summary: true
-          title: All Playwright tests ${{ matrix.NAME }}
-          failed-report: true
-          # pull-request-report: true
-          pull-request: true
-          # annotate: false
-          update-comment: true
-          overwrite-comment: false
-          comment-tag: '${{ github.workflow }}-${{ github.job }}'
-
-      - name: Upload test results
-        if: |
-          success() ||
-          steps.test-playwright-requests.outcome != 'success' ||
-          steps.test-playwright-read-only.outcome != 'success' ||
-          steps.test-playwright-no-tag.outcome != 'success' ||
-          steps.test-playwright-write.outcome != 'success'
-        uses: actions/upload-artifact@master
-        with:
-          if-no-files-found: 'ignore'
-          name: ${{ matrix.name }}-playwright-report
-          path: ${{ github.workspace }}/tests/end2end/playwright-report
-
-      - name: Export some logs to files
-        if: always()
-        run: |
-          mkdir -p /tmp/e2e/lwc
-          mkdir -p /tmp/e2e/docker
-          docker logs lizmap${{ env.LZMBRANCH }}_test_qgis &> /tmp/e2e/docker/qgis-server.log | true
-          docker logs lizmap${{ env.LZMBRANCH }}_test_php &> /tmp/e2e/docker/php.log | true
-          docker logs lizmap${{ env.LZMBRANCH }}_test_nginx &> /tmp/e2e/docker/nginx.log | true
-          cp -r ../lizmap/var/log /tmp/e2e/lwc/
-
-      - name: Upload all logs as artifact
-        uses: actions/upload-artifact@master
-        if: always()
-        with:
-          name: ${{ matrix.name }}-E2E-all-logs
-          path: |
-            /tmp/e2e/
-
-      - name: Database diff check after readonly tests
-        run:
-          exit ${{ env.db_diff }}
+      - name:
