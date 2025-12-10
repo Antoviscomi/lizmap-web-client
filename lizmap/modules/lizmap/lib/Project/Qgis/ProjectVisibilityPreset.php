@@ -13,6 +13,8 @@
 
 namespace Lizmap\Project\Qgis;
 
+use Lizmap\App\XmlTools;
+
 /**
  * QGIS Project Visibility preset class.
  *
@@ -54,56 +56,25 @@ class ProjectVisibilityPreset extends BaseQgisObject
     }
 
     /**
-     * Get visibility preset as key array.
+     * @param \XMLReader $oXmlReader
+     * @param array      $context
      *
-     * @return array
+     * @return self
      */
-    public function toKeyArray()
+    public static function fromXmlReader(\XMLReader $oXmlReader, array $context)
     {
-        $data = array(
-            'layers' => array(),
-            'checkedGroupNode' => $this->checkedGroupNodes,
-            'expandedGroupNode' => $this->expandedGroupNodes,
-            'checkedLegendNodes' => $this->checkedLegendNodes,
-        );
-        foreach ($this->layers as $layer) {
-            // Include ALL layers from theme (both visible="0" and visible="1")
-            // Layers present in theme should be checked in Lizmap, regardless of visible attribute
-            // The visible attribute is passed for potential future legend node handling
-            $data['layers'][$layer->id] = array(
-                'style' => $layer->style,
-                'expanded' => $layer->expanded,
-                'visible' => $layer->visible,
-            );
-        }
+        $data = array();
+        $attributes = XmlTools::xmlReaderAttributes($oXmlReader);
+        $data['name'] = $attributes['name'];
 
-        return $data;
-    }
-
-    /** @var string The XML element local name */
-    protected static $qgisLocalName = 'visibility-preset';
-
-    public static function fromXmlReader($oXmlReader)
-    {
-        if ($oXmlReader->nodeType != \XMLReader::ELEMENT) {
-            throw new \Exception('Provide an XMLReader::ELEMENT!');
-        }
-        $localName = static::$qgisLocalName;
-        if ($oXmlReader->localName != $localName) {
-            throw new \Exception('Provide a `'.$localName.'` element not `'.$oXmlReader->localName.'`!');
-        }
+        // In Lizmap, the QGIS project version is typically passed in the context
+        // for parsing classes that need it.
+        $qgisProjectVersion = $context['qgisProjectVersion'] ?? 0;
 
         $depth = $oXmlReader->depth;
-        $data = array(
-            'name' => $oXmlReader->getAttribute('name'),
-            'layers' => array(),
-            'checkedGroupNodes' => array(),
-            'expandedGroupNodes' => array(),
-            'checkedLegendNodes' => array(),
-        );
         while ($oXmlReader->read()) {
             if ($oXmlReader->nodeType == \XMLReader::END_ELEMENT
-                && $oXmlReader->localName == $localName
+                && $oXmlReader->localName == 'visibility-preset'
                 && $oXmlReader->depth == $depth) {
                 break;
             }
@@ -112,20 +83,43 @@ class ProjectVisibilityPreset extends BaseQgisObject
                 continue;
             }
 
-            if ($oXmlReader->depth > $depth + 2) {
+            if ($oXmlReader->depth != $depth + 1) {
                 continue;
             }
 
             $tagName = $oXmlReader->localName;
+
             if ($tagName == 'layer') {
-                $data['layers'][] = new ProjectVisibilityPresetLayer(
-                    array(
-                        'id' => $oXmlReader->getAttribute('id'),
-                        'visible' => filter_var($oXmlReader->getAttribute('visible'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
-                        'style' => $oXmlReader->getAttribute('style'),
-                        'expanded' => filter_var($oXmlReader->getAttribute('expanded'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
-                    ),
+                $layer = array(
+                    'id' => $oXmlReader->getAttribute('id'),
+                    'style' => $oXmlReader->getAttribute('style'),
+                    'expanded' => $oXmlReader->getAttribute('expanded'),
                 );
+                
+                // Original comment:
+                // Since QGIS 3.26, theme contains every layers with visible attributes
+                // before only visible layers are in theme
+                // So do not keep layer with visible != '1' if it is defined
+                
+                $visibleAttr = $oXmlReader->getAttribute('visible');
+
+                // FIX: Correct layer inclusion logic for QGIS >= 3.26 projects.
+                // We only skip the layer if the project is 3.26+ (32600) AND the layer is explicitly set to '0' (unchecked).
+                // Otherwise, the layer should be included (representing a 'checked' state).
+                if ($qgisProjectVersion >= 32600
+                    && $visibleAttr === '0'
+                ) {
+                    continue;
+                }
+                
+                // Original logic (only for projects < 3.26 or if fix is applied)
+                if ($qgisProjectVersion < 32600 && $visibleAttr !== '1' && $visibleAttr !== null) {
+                    continue;
+                }
+                
+                // If the layer was not skipped by the new logic, add it to the preset.
+                $data['layers'][] = new ProjectVisibilityPresetLayer($layer);
+
             } elseif ($tagName == 'checked-group-node') {
                 $data['checkedGroupNodes'][] = $oXmlReader->getAttribute('id');
             } elseif ($tagName == 'expanded-group-node') {
