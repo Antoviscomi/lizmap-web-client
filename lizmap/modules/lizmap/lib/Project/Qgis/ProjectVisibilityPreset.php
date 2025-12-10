@@ -13,7 +13,7 @@
 
 namespace Lizmap\Project\Qgis;
 
-use Lizmap\App\XmlTools;
+use Lizmap\App\XmlTools; // Keep use statement for context
 
 /**
  * QGIS Project Visibility preset class.
@@ -61,13 +61,15 @@ class ProjectVisibilityPreset extends BaseQgisObject
      *
      * @return self
      */
-    public static function fromXmlReader(\XMLReader $oXmlReader, array $context = []) // FIX 1: Make context optional to resolve ArgumentCountError
+    // FIX 1: Make context optional to resolve ArgumentCountError in tests.
+    public static function fromXmlReader(\XMLReader $oXmlReader, array $context = [])
     {
         $data = array();
-        $attributes = XmlTools::xmlReaderAttributes($oXmlReader);
-        $data['name'] = $attributes['name'];
+        
+        // FIX 3: Revert XmlTools::xmlReaderAttributes to manual reading to avoid fatal error.
+        $data['name'] = $oXmlReader->getAttribute('name');
 
-        // Retrieve QGIS project version from context. Default to 0 for old tests that do not pass context.
+        // Retrieve QGIS project version from context. Default to 0 for tests that do not pass context.
         $qgisProjectVersion = $context['qgisProjectVersion'] ?? 0;
 
         $depth = $oXmlReader->depth;
@@ -95,34 +97,32 @@ class ProjectVisibilityPreset extends BaseQgisObject
                     'expanded' => $oXmlReader->getAttribute('expanded'),
                 );
 
+                // Original comment:
                 // Since QGIS 3.26, theme contains every layers with visible attributes
                 // before only visible layers are in theme
                 // So do not keep layer with visible != '1' if it is defined
 
-                                $visibleAttr = $oXmlReader->getAttribute('visible');
+                $visibleAttr = $oXmlReader->getAttribute('visible');
+                $shouldSkip = false;
 
-                // FIX: Correct layer inclusion logic for QGIS >= 3.26 projects.
-                // We only skip the layer if the project is 3.26+ (32600) AND the layer is explicitly set to '0' (unchecked).
-                // Otherwise, the layer should be included (representing a 'checked' state).
-                if ($qgisProjectVersion >= 32600
-                    && $visibleAttr === '0'
-                ) {
+                if ($qgisProjectVersion >= 32600) {
+                    // FIX 2.1 (QGIS 3.26+): Skip ONLY if explicitly marked as '0' (unchecked in the theme).
+                    if ($visibleAttr === '0') {
+                        $shouldSkip = true;
+                    }
+                } else {
+                    // FIX 2.2 (QGIS < 3.26): Use original strict logic (skip if set and not '1').
+                    if ($visibleAttr !== '1' && $visibleAttr !== null) {
+                        $shouldSkip = true;
+                    }
+                }
+
+                if ($shouldSkip) {
                     continue;
                 }
-                
-                // Original logic (only for projects < 3.26 or if fix is applied)
-                if ($qgisProjectVersion < 32600 && $visibleAttr !== '1' && $visibleAttr !== null) {
-                    continue;
-                }
-                
-                // If the layer was not skipped by the new logic, add it to the preset.
-                $layerData = array(
-                    'id' => $oXmlReader->getAttribute('id'),
-                    'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
-                    'style' => $oXmlReader->getAttribute('style'),
-                    'expanded' => filter_var($oXmlReader->getAttribute('expanded'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
-                );
-                $data['layers'][] = new ProjectVisibilityPresetLayer($layerData);
+
+                $data['layers'][] = new ProjectVisibilityPresetLayer($layer);
+
             } elseif ($tagName == 'checked-group-node') {
                 $data['checkedGroupNodes'][] = $oXmlReader->getAttribute('id');
             } elseif ($tagName == 'expanded-group-node') {
@@ -158,5 +158,23 @@ class ProjectVisibilityPreset extends BaseQgisObject
         }
 
         return new ProjectVisibilityPreset($data);
+    }
+    
+    /**
+     * Retrieve the object data as an array keyed by preset name.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    // FIX 4: Restore toKeyArray() method required by unit tests.
+    public function toKeyArray(): array
+    {
+        return array(
+            $this->name => array(
+                'layers' => $this->layers,
+                'checkedGroupNodes' => $this->checkedGroupNodes,
+                'expandedGroupNodes' => $this->expandedGroupNodes,
+                'checkedLegendNodes' => $this->checkedLegendNodes,
+            ),
+        );
     }
 }
