@@ -20,7 +20,7 @@ jobs:
     defaults:
       run:
         working-directory: .
-        shell: /usr/bin/bash -e {0}
+        shell: /bin/sh -e {0} # <-- CORREZIONE 1: Usa la shell /bin/sh
     strategy:
       fail-fast: false
       matrix:
@@ -148,7 +148,7 @@ jobs:
 
       - name: Add hosts to /etc/hosts
         run: |
-            sudo echo "127.0.0.1 othersite.local" | sudo tee -a /etc/hosts
+            echo "127.0.0.1 othersite.local" | sudo tee -a /etc/hosts # <-- CORREZIONE 2: Rimosso sudo da echo
 
       - name: "Setup Node ${{ env.NODE_VERSION }}"
         uses: actions/setup-node@v5
