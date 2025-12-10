@@ -56,9 +56,6 @@ class ProjectVisibilityPreset extends BaseQgisObject
     }
 
     /**
-     * @param \XMLReader $oXmlReader
-     * @param array      $context
-     *
      * @return self
      */
     // FIX 1: Make context optional to resolve ArgumentCountError in tests.
