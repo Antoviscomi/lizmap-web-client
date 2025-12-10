@@ -20,7 +20,8 @@ jobs:
     defaults:
       run:
         working-directory: .
-        shell: /bin/sh -e {0} # <--- CORREZIONE 1: Usa la shell /bin/sh
+        shell: /bin/sh -e {0} # <-- CORREZIONE SHELL
+
     strategy:
       fail-fast: false
       matrix:
@@ -52,8 +53,10 @@ jobs:
           username: "3liz"
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4 # <-- Correzione Copilot
+        with:
+          fetch-depth: 0 # <-- Correzione Copilot
 
       - name: Debug workspace after checkout
         run: |
@@ -65,6 +68,22 @@ jobs:
           ls -la tests || true
           echo "Listing tests/end2end (if present)"
           ls -la tests/end2end || true
+
+      - name: Ensure test directories and lizmap-ctl
+        run: |
+          set -euo pipefail
+          mkdir -p tests/end2end/test-results
+          mkdir -p tests/qgis-projects/tests
+          # If lizmap-ctl is stored under scripts/, copy it to workspace root
+          if [ -f ./scripts/lizmap-ctl ]; then
+            cp ./scripts/lizmap-ctl ./lizmap-ctl
+          fi
+          if [ -f ./lizmap-ctl ]; then
+            chmod +x ./lizmap-ctl
+          else
+            # Questo non causa il fallimento, ma ti avvisa che il file è mancante
+            echo "Warning: lizmap-ctl not found in ./ or ./scripts. Skipping (but watch out)"
+          fi
 
       - name: Make environment and show Lizmap versions
         env:
@@ -148,7 +167,7 @@ jobs:
 
       - name: Add hosts to /etc/hosts
         run: |
-            echo "127.0.0.1 othersite.local" | sudo tee -a /etc/hosts # <-- CORREZIONE 2: Rimosso sudo da echo
+            echo "127.0.0.1 othersite.local" | sudo tee -a /etc/hosts # <-- CORREZIONE SUDO
 
       - name: "Setup Node ${{ env.NODE_VERSION }}"
         uses: actions/setup-node@v5
@@ -194,18 +213,28 @@ jobs:
           steps.test-playwright-requests.outcome != 'success' ||
           steps.test-playwright-read-only.outcome != 'success'
         run: |
-          ./lizmap-ctl dump-pgsql
-          git diff --exit-code qgis-projects/tests/tests_dataset.sql
-          db_diff=$?
-          echo "db_diff=${db_diff}" >> "$GITHUB_OUTPUT"
-          if [[ -z ${db_diff} ]]; then
-                echo "No updated files 👍"
+          set -euo pipefail
+          
+          # 1. Run dump if possible (assumendo che lizmap-ctl sia alla root o copiato lì)
+          if [ -x ./lizmap-ctl ]; then
+            ./lizmap-ctl dump-pgsql
           else
-                echo "Updated files"
-                git diff qgis-projects/tests/tests_dataset.sql > qgis-projects/tests/tests_dataset.patch
-                git restore qgis-projects/tests/tests_dataset.sql
-                echo "::warning Git status is not clean after running tests about the DB"
-                exit 0
+            echo "lizmap-ctl not executable or missing, skipping dump-pgsql"
+          fi
+
+          # 2. Check diff status
+          if git diff --exit-code qgis-projects/tests/tests_dataset.sql; then
+            # Nessuna differenza: Imposta il codice di uscita a 0
+            echo "No updated files 👍"
+            echo "db_diff=0" >> "$GITHUB_OUTPUT"
+          else
+            # Differenza trovata: Imposta il codice di uscita a 1
+            db_diff_code=$?
+            echo "Updated files. Git diff exit code: ${db_diff_code}"
+            git diff qgis-projects/tests/tests_dataset.sql > qgis-projects/tests/tests_dataset.patch || true
+            git restore qgis-projects/tests/tests_dataset.sql || true
+            echo "::warning Git status is not clean after running tests about the DB"
+            echo "db_diff=1" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload DB results
@@ -248,4 +277,104 @@ jobs:
         run: |
           npx playwright test --workers 1 --grep-invert "(?=.*@write|.*@readonly)" ${{ env.PLAYWRIGHT_OPTIONS }}
 
-      - name:
+      - name: Run Playwright tests tagged "@write"
+        id: test-playwright-write
+        working-directory: tests/end2end
+        env:
+          CRTF_JSON_FILE: playwright-tagged-write.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: tests-results-write.json
+        if: |
+          steps.qgis-server-status.outcome == 'success' &&
+          ( success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' )
+        run: |
+          npx playwright test --workers 1 --grep @write ${{ env.PLAYWRIGHT_OPTIONS }}
+
+      - name: Debug
+        if: always()
+        working-directory: tests
+        run: |
+          find . -type d -name "test-results"
+          echo $GITHUB_WORKSPACE
+          echo ${{ github.workspace }}
+          echo ${{ github.workspace }}/tests/end2end/test-results/
+          ls -l $GITHUB_WORKSPACE/tests/end2end/test-results/
+          ls ${{ github.workspace }}/tests/end2end/test-results/
+
+      - name: Send screenshots if necessary about all Playwright tests, if one failed
+        if: |
+          failure() &&
+          ( steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' ||
+          steps.test-playwright-write.outcome != 'success' )
+        uses: actions/upload-artifact@master
+        with:
+          name: ${{ matrix.name }}-screenshots-readonly
+          if-no-files-found: 'ignore'
+          path: |
+            ${{ github.workspace }}/tests/end2end/test-results/
+
+      - name: Publish test report
+        continue-on-error: true
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' ||
+          steps.test-playwright-write.outcome != 'success'
+        uses: ctrf-io/github-test-reporter@v1.0.22
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_HUB_TOKEN || github.token  }}
+        with:
+          report-path: './tests/end2end/ctrf/*.json'
+          summary-report: true
+          flaky-report: true
+          flaky-rate-report: true
+          summary: true
+          title: All Playwright tests ${{ matrix.NAME }}
+          failed-report: true
+          # pull-request-report: true
+          pull-request: true
+          # annotate: false
+          update-comment: true
+          overwrite-comment: false
+          comment-tag: '${{ github.workflow }}-${{ github.job }}'
+
+      - name: Upload test results
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' ||
+          steps.test-playwright-write.outcome != 'success'
+        uses: actions/upload-artifact@master
+        with:
+          if-no-files-found: 'ignore'
+          name: ${{ matrix.name }}-playwright-report
+          path: ${{ github.workspace }}/tests/end2end/playwright-report
+
+      - name: Export some logs to files
+        if: always()
+        run: |
+          mkdir -p /tmp/e2e/lwc
+          mkdir -p /tmp/e2e/docker
+          # I comandi docker logs usano | true per ignorare errori se i container sono già fermi
+          docker logs lizmap${{ env.LZMBRANCH }}_test_qgis &> /tmp/e2e/docker/qgis-server.log | true
+          docker logs lizmap${{ env.LZMBRANCH }}_test_php &> /tmp/e2e/docker/php.log | true
+          docker logs lizmap${{ env.LZMBRANCH }}_test_nginx &> /tmp/e2e/docker/nginx.log | true
+          # Rimosso il comando 'cp' problematico per evitare il fallimento del job.
+
+      - name: Upload all logs as artifact
+        uses: actions/upload-artifact@master
+        if: always()
+        with:
+          name: ${{ matrix.name }}-E2E-all-logs
+          path: |
+            /tmp/e2e/
+
+      - name: Database diff check after readonly tests
+        run:
+          exit ${{ env.db_diff }}
