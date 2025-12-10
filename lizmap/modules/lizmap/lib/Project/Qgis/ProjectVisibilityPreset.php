@@ -93,37 +93,20 @@ class ProjectVisibilityPreset extends BaseQgisObject
             if ($tagName == 'layer') {
                 $visibleAttr = $oXmlReader->getAttribute('visible');
                 $expandedAttr = $oXmlReader->getAttribute('expanded');
-                $shouldSkip = false;
 
-                // Original comment:
-                // Since QGIS 3.26, theme contains every layers with visible attributes
-                // before only visible layers are in theme
-                // So do not keep layer with visible != '1' if it is defined
-
-                if ($qgisProjectVersion >= 32600) {
-                    // FIX 2.1 (QGIS 3.26+): Skip ONLY if explicitly marked as '0' (unchecked in the theme).
-                    if ($visibleAttr === '0') {
-                        $shouldSkip = true;
-                    }
-                } else {
-                    // FIX 2.2 (QGIS < 3.26): Use original strict logic (skip if set and not '1').
-                    if ($visibleAttr !== '1' && $visibleAttr !== null) {
-                        $shouldSkip = true;
-                    }
-                }
-
-                if ($shouldSkip) {
+                // FIX Layer visibility logic (for all versions): Only skip if explicitly marked as '0' (unchecked).
+                // This handles the QGIS 3.26+ change and ensures all layers present in older themes are included.
+                if ($visibleAttr === '0') {
                     continue;
                 }
 
-                // FIX 4: Construct layer data robustly after filtering.
-                // Ensures mandatory 'visible' property is set and 'expanded' is correctly cast to boolean.
+                // If the layer was not skipped, process its attributes
                 $layerData = array(
                     'id' => $oXmlReader->getAttribute('id'),
-                    // visibleAttr is '1', '0', or null. Cast to bool/null for ProjectVisibilityPresetLayer.
+                    // visibleAttr is '1', '0', or null. Since '0' is filtered, this will be bool(true) or null.
                     'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
                     'style' => $oXmlReader->getAttribute('style'),
-                    // Cast expanded to bool/null as expected by ProjectVisibilityPresetLayer.
+                    // Cast expanded to bool/null.
                     'expanded' => filter_var($expandedAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
                 );
 
