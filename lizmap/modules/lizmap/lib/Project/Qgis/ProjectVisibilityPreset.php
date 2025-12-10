@@ -62,7 +62,6 @@ class ProjectVisibilityPreset extends BaseQgisObject
     public static function fromXmlReader(\XMLReader $oXmlReader, array $context = array())
     {
         $data = array();
-        
         // FIX 3: Revert XmlTools::xmlReaderAttributes to manual reading to avoid fatal error.
         $data['name'] = $oXmlReader->getAttribute('name');
 
