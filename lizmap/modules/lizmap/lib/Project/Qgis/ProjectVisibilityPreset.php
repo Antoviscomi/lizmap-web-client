@@ -99,28 +99,30 @@ class ProjectVisibilityPreset extends BaseQgisObject
                 // before only visible layers are in theme
                 // So do not keep layer with visible != '1' if it is defined
 
-                $visibleAttr = $oXmlReader->getAttribute('visible');
-                $shouldSkip = false;
+                                $visibleAttr = $oXmlReader->getAttribute('visible');
 
-                if ($qgisProjectVersion >= 32600) {
-                    // FIX 2.1 (QGIS 3.26+): Skip ONLY if explicitly marked as '0' (unchecked in the theme).
-                    if ($visibleAttr === '0') {
-                        $shouldSkip = true;
-                    }
-                } else {
-                    // FIX 2.2 (QGIS < 3.26): Use original strict logic (skip if set and not '1').
-                    // This handles old QGIS behavior where layers not visible were often omitted or marked '0' strictly.
-                    if ($visibleAttr !== '1' && $visibleAttr !== null) {
-                        $shouldSkip = true;
-                    }
-                }
-
-                if ($shouldSkip) {
+                // FIX: Correct layer inclusion logic for QGIS >= 3.26 projects.
+                // We only skip the layer if the project is 3.26+ (32600) AND the layer is explicitly set to '0' (unchecked).
+                // Otherwise, the layer should be included (representing a 'checked' state).
+                if ($qgisProjectVersion >= 32600
+                    && $visibleAttr === '0'
+                ) {
                     continue;
                 }
-
-                $data['layers'][] = new ProjectVisibilityPresetLayer($layer);
-
+                
+                // Original logic (only for projects < 3.26 or if fix is applied)
+                if ($qgisProjectVersion < 32600 && $visibleAttr !== '1' && $visibleAttr !== null) {
+                    continue;
+                }
+                
+                // If the layer was not skipped by the new logic, add it to the preset.
+                $layerData = array(
+                    'id' => $oXmlReader->getAttribute('id'),
+                    'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
+                    'style' => $oXmlReader->getAttribute('style'),
+                    'expanded' => filter_var($oXmlReader->getAttribute('expanded'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
+                );
+                $data['layers'][] = new ProjectVisibilityPresetLayer($layerData);
             } elseif ($tagName == 'checked-group-node') {
                 $data['checkedGroupNodes'][] = $oXmlReader->getAttribute('id');
             } elseif ($tagName == 'expanded-group-node') {
