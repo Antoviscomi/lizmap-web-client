@@ -91,19 +91,14 @@ class ProjectVisibilityPreset extends BaseQgisObject
             $tagName = $oXmlReader->localName;
 
             if ($tagName == 'layer') {
-                $layer = array(
-                    'id' => $oXmlReader->getAttribute('id'),
-                    'style' => $oXmlReader->getAttribute('style'),
-                    'expanded' => $oXmlReader->getAttribute('expanded'),
-                );
+                $visibleAttr = $oXmlReader->getAttribute('visible');
+                $expandedAttr = $oXmlReader->getAttribute('expanded');
+                $shouldSkip = false;
 
                 // Original comment:
                 // Since QGIS 3.26, theme contains every layers with visible attributes
                 // before only visible layers are in theme
                 // So do not keep layer with visible != '1' if it is defined
-
-                $visibleAttr = $oXmlReader->getAttribute('visible');
-                $shouldSkip = false;
 
                 if ($qgisProjectVersion >= 32600) {
                     // FIX 2.1 (QGIS 3.26+): Skip ONLY if explicitly marked as '0' (unchecked in the theme).
@@ -121,7 +116,18 @@ class ProjectVisibilityPreset extends BaseQgisObject
                     continue;
                 }
 
-                $data['layers'][] = new ProjectVisibilityPresetLayer($layer);
+                // FIX 4: Construct layer data robustly after filtering.
+                // Ensures mandatory 'visible' property is set and 'expanded' is correctly cast to boolean.
+                $layerData = array(
+                    'id' => $oXmlReader->getAttribute('id'),
+                    // visibleAttr is '1', '0', or null. Cast to bool/null for ProjectVisibilityPresetLayer.
+                    'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE), 
+                    'style' => $oXmlReader->getAttribute('style'),
+                    // Cast expanded to bool/null as expected by ProjectVisibilityPresetLayer.
+                    'expanded' => filter_var($expandedAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE), 
+                );
+
+                $data['layers'][] = new ProjectVisibilityPresetLayer($layerData);
 
             } elseif ($tagName == 'checked-group-node') {
                 $data['checkedGroupNodes'][] = $oXmlReader->getAttribute('id');
@@ -165,7 +171,7 @@ class ProjectVisibilityPreset extends BaseQgisObject
      *
      * @return array<string, array<string, mixed>>
      */
-    // FIX 4: Restore toKeyArray() method required by unit tests.
+    // FIX 5: Restore toKeyArray() method required by unit tests.
     public function toKeyArray(): array
     {
         return array(
