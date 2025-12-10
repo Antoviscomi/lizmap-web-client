@@ -62,7 +62,7 @@ class ProjectVisibilityPreset extends BaseQgisObject
      * @return self
      */
     // FIX 1: Make context optional to resolve ArgumentCountError in tests.
-    public static function fromXmlReader(\XMLReader $oXmlReader, array $context = [])
+    public static function fromXmlReader(\XMLReader $oXmlReader, array $context = array())
     {
         $data = array();
         
@@ -121,10 +121,10 @@ class ProjectVisibilityPreset extends BaseQgisObject
                 $layerData = array(
                     'id' => $oXmlReader->getAttribute('id'),
                     // visibleAttr is '1', '0', or null. Cast to bool/null for ProjectVisibilityPresetLayer.
-                    'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE), 
+                    'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
                     'style' => $oXmlReader->getAttribute('style'),
                     // Cast expanded to bool/null as expected by ProjectVisibilityPresetLayer.
-                    'expanded' => filter_var($expandedAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE), 
+                    'expanded' => filter_var($expandedAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
                 );
 
                 $data['layers'][] = new ProjectVisibilityPresetLayer($layerData);
@@ -165,7 +165,7 @@ class ProjectVisibilityPreset extends BaseQgisObject
 
         return new ProjectVisibilityPreset($data);
     }
-    
+
     /**
      * Retrieve the object data as an array keyed by preset name.
      *
