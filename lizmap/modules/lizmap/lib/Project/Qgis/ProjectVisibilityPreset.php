@@ -61,14 +61,13 @@ class ProjectVisibilityPreset extends BaseQgisObject
      *
      * @return self
      */
-    public static function fromXmlReader(\XMLReader $oXmlReader, array $context)
+    public static function fromXmlReader(\XMLReader $oXmlReader, array $context = []) // FIX 1: Make context optional to resolve ArgumentCountError
     {
         $data = array();
         $attributes = XmlTools::xmlReaderAttributes($oXmlReader);
         $data['name'] = $attributes['name'];
 
-        // In Lizmap, the QGIS project version is typically passed in the context
-        // for parsing classes that need it.
+        // Retrieve QGIS project version from context. Default to 0 for old tests that do not pass context.
         $qgisProjectVersion = $context['qgisProjectVersion'] ?? 0;
 
         $depth = $oXmlReader->depth;
@@ -95,29 +94,31 @@ class ProjectVisibilityPreset extends BaseQgisObject
                     'style' => $oXmlReader->getAttribute('style'),
                     'expanded' => $oXmlReader->getAttribute('expanded'),
                 );
-                
-                // Original comment:
+
                 // Since QGIS 3.26, theme contains every layers with visible attributes
                 // before only visible layers are in theme
                 // So do not keep layer with visible != '1' if it is defined
-                
-                $visibleAttr = $oXmlReader->getAttribute('visible');
 
-                // FIX: Correct layer inclusion logic for QGIS >= 3.26 projects.
-                // We only skip the layer if the project is 3.26+ (32600) AND the layer is explicitly set to '0' (unchecked).
-                // Otherwise, the layer should be included (representing a 'checked' state).
-                if ($qgisProjectVersion >= 32600
-                    && $visibleAttr === '0'
-                ) {
+                $visibleAttr = $oXmlReader->getAttribute('visible');
+                $shouldSkip = false;
+
+                if ($qgisProjectVersion >= 32600) {
+                    // FIX 2.1 (QGIS 3.26+): Skip ONLY if explicitly marked as '0' (unchecked in the theme).
+                    if ($visibleAttr === '0') {
+                        $shouldSkip = true;
+                    }
+                } else {
+                    // FIX 2.2 (QGIS < 3.26): Use original strict logic (skip if set and not '1').
+                    // This handles old QGIS behavior where layers not visible were often omitted or marked '0' strictly.
+                    if ($visibleAttr !== '1' && $visibleAttr !== null) {
+                        $shouldSkip = true;
+                    }
+                }
+
+                if ($shouldSkip) {
                     continue;
                 }
-                
-                // Original logic (only for projects < 3.26 or if fix is applied)
-                if ($qgisProjectVersion < 32600 && $visibleAttr !== '1' && $visibleAttr !== null) {
-                    continue;
-                }
-                
-                // If the layer was not skipped by the new logic, add it to the preset.
+
                 $data['layers'][] = new ProjectVisibilityPresetLayer($layer);
 
             } elseif ($tagName == 'checked-group-node') {
