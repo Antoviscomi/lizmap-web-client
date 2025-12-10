@@ -1,164 +1,351 @@
-<?php
+name: "🎳 End2end"
+on:
+  pull_request:
+    branches:
+      - master
+      - release_3_*
+  # allow to run manually
+  workflow_dispatch:
 
-/**
- * QGIS Project Visibility Preset.
- *
- * @author    3liz
- * @copyright 2023 3liz
- *
- * @see      http://3liz.com
- *
- * @license Mozilla Public License : http://www.mozilla.org/MPL/
- */
+env:
+  NODE_VERSION: "21"
 
-namespace Lizmap\Project\Qgis;
+jobs:
+  end2end:
+    name: "E2E QGIS ${{ matrix.qgis-server }} PG ${{ matrix.pg-postgis }} PHP ${{ matrix.php }}"
+    permissions:
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+        shell: /bin/sh -e {0} # <--- CORREZIONE 1: Usa la shell /bin/sh
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "LEGACY"
+            php: "8.2"
+            pg-postgis: "14-3"
+            qgis-server: "3.40"
+            update-projects: "FALSE"
+          - name: "BLEEDING_EDGE"
+            php: "8.4"
+            pg-postgis: "17-3"
+            qgis-server: "3.44"
+            update-projects: "TRUE"
+    env:
+      PLAYWRIGHT_FORCE_TTY: true
+      PLAYWRIGHT_LIST_PRINT_STEPS: true
+      PLAYWRIGHT_JSON_OUTPUT_DIR: ${{ github.workspace }}/tests/end2end/playwright-report
+      PLAYWRIGHT_OPTIONS: --project=end2end
+      FORCE_COLOR: true
+    steps:
 
-use Lizmap\App\XmlTools; // Keep use statement for context
+      - name: Login to Docker Hub
+        if: ${{ github.secret_source == 'Actions' }}
+        uses: docker/login-action@v3
+        env:
+          ACTIONS_STEP_DEBUG: true
+        with:
+          username: "3liz"
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-/**
- * QGIS Project Visibility preset class.
- *
- * @property string                              $name
- * @property array<ProjectVisibilityPresetLayer> $layers
- * @property array<string>                       $checkedGroupNodes
- * @property array<string>                       $expandedGroupNodes
- * @property array<string, array<string>>        $checkedLegendNodes
- */
-class ProjectVisibilityPreset extends BaseQgisObject
-{
-    /** @var array<string> The instance properties */
-    protected $properties = array(
-        'name',
-        'layers',
-        'checkedGroupNodes',
-        'expandedGroupNodes',
-        'checkedLegendNodes',
-    );
+      - name: Checkout
+        uses: actions/checkout@v5
 
-    /** @var array<string> The not null properties */
-    protected $mandatoryProperties = array(
-        'name',
-        'layers',
-    );
+      - name: Debug workspace after checkout
+        run: |
+          echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}"
+          pwd
+          echo "Listing repo root"
+          ls -la || true
+          echo "Listing tests folder (if present)"
+          ls -la tests || true
+          echo "Listing tests/end2end (if present)"
+          ls -la tests/end2end || true
 
-    protected function set(array $data): void
-    {
-        if (!array_key_exists('checkedGroupNodes', $data)) {
-            $data['checkedGroupNodes'] = array();
-        }
-        if (!array_key_exists('expandedGroupNodes', $data)) {
-            $data['expandedGroupNodes'] = array();
-        }
-        if (!array_key_exists('checkedLegendNodes', $data)) {
-            $data['checkedLegendNodes'] = array();
-        }
-        parent::set($data);
-    }
+      - name: Make environment and show Lizmap versions
+        env:
+          PHP_VERSION: ${{ matrix.php }}
+          LZMPOSTGISVERSION: ${{ matrix.pg-postgis }}
+          LZMQGSRVVERSION: ${{ matrix.qgis-server }}
+        run: |
+          mkdir -p ${{env.PLAYWRIGHT_JSON_OUTPUT_DIR}}
+          make env
+          cat .env
 
-    /**
-     * @return self
-     */
-    public static function fromXmlReader(\XMLReader $oXmlReader, array $context = array())
-    {
-        $data = array();
-        // FIX 3: Revert XmlTools::xmlReaderAttributes to manual reading to avoid fatal error.
-        $data['name'] = $oXmlReader->getAttribute('name');
+      - name: Read environment file and set variables
+        uses: cosq-network/dotenv-loader@v1.0.2
+        with:
+          # Somehow, the working-directory is not taken into account
+          env-file: tests/.env
 
-        // Retrieve QGIS project version from context. Default to 0 for tests that do not pass context.
-        $qgisProjectVersion = $context['qgisProjectVersion'] ?? 0;
+        # For testing only
+      - name: Update all QGIS projects to QGIS Desktop ${{ matrix.qgis-server }} by opening them and rewriting them
+        if: |
+          matrix.update-projects == 'TRUE'
+        run: |
+          make upgrade-projects
+          git status
+          git diff qgis-projects/tests/
 
-        $depth = $oXmlReader->depth;
-        while ($oXmlReader->read()) {
-            if ($oXmlReader->nodeType == \XMLReader::END_ELEMENT
-                && $oXmlReader->localName == 'visibility-preset'
-                && $oXmlReader->depth == $depth) {
-                break;
-            }
+      - name: Install QGIS server plugins
+        run: make build-plugins
 
-            if ($oXmlReader->nodeType != \XMLReader::ELEMENT) {
-                continue;
-            }
+      - name: Show QGIS server environment
+        run: |
+          make show-qgis-server-versions
 
-            if ($oXmlReader->depth != $depth + 1) {
-                continue;
-            }
+      - name: Run docker compose
+        run: |
+          make env
+          docker compose version
+          echo "Building image"
+          docker compose build --quiet
+          echo "Starting docker stack - wait for healthy states"
+          docker compose up -d --quiet-pull
+          docker compose ps
 
-            $tagName = $oXmlReader->localName;
+      - name: Check about QGIS Server status
+        id: qgis-server-status
+        run: |
+          curl \
+            --user 'admin:admin' \
+            --retry 30 \
+            --retry-delay 5 \
+            -N \
+            "http://localhost:8130/index.php/view/app/metadata" \
+            -o /tmp/test-qgis-server.json
 
-            if ($tagName == 'layer') {
-                $visibleAttr = $oXmlReader->getAttribute('visible');
-                $expandedAttr = $oXmlReader->getAttribute('expanded');
+          cat /tmp/test-qgis-server.json | jq .qgis_server_info
+          qgis_info=$(cat /tmp/test-qgis-server.json | jq --raw-output '.qgis_server_info.error')
+          echo $qgis_info
+          if [[ "$qgis_info" != "null" ]]; then
+              echo "QGIS Server is not well configured"
+              echo "::warning QGIS Server was not up"
+              exit 1
+          else
+             echo "JSON metadata OK about QGIS Server"
+          fi
 
-                // FIX Layer visibility logic (for all versions): Only skip if explicitly marked as '0' (unchecked).
-                // This handles the QGIS 3.26+ change and ensures all layers present in older themes are included.
-                if ($visibleAttr === '0') {
-                    continue;
-                }
+      - name: Check about updated files after a build (PHP or JS)
+        run: |
+          if [[ -z $(git status --porcelain -uno) ]]; then
+              echo "No updated files 👍"
+          else
+              echo "Updated files"
+              git status
+              echo "::warning Git status is not clean"
+          #   exit 1
+          fi
 
-                // If the layer was not skipped, process its attributes
-                $layerData = array(
-                    'id' => $oXmlReader->getAttribute('id'),
-                    // visibleAttr is '1', '0', or null. Since '0' is filtered, this will be bool(true) or null.
-                    'visible' => filter_var($visibleAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
-                    'style' => $oXmlReader->getAttribute('style'),
-                    // Cast expanded to bool/null.
-                    'expanded' => filter_var($expandedAttr, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
-                );
+      - name: Load SQL data
+        run: |
+          cd qgis-projects/tests
+          ./load_sql.sh
 
-                $data['layers'][] = new ProjectVisibilityPresetLayer($layerData);
+      - name: Add hosts to /etc/hosts
+        run: |
+            echo "127.0.0.1 othersite.local" | sudo tee -a /etc/hosts # <-- CORREZIONE 2: Rimosso sudo da echo
 
-            } elseif ($tagName == 'checked-group-node') {
-                $data['checkedGroupNodes'][] = $oXmlReader->getAttribute('id');
-            } elseif ($tagName == 'expanded-group-node') {
-                $data['expandedGroupNodes'][] = $oXmlReader->getAttribute('id');
-            } elseif ($tagName == 'checked-legend-nodes') {
-                // if the element is empty, skip it
-                if ($oXmlReader->isEmptyElement) {
-                    continue;
-                }
+      - name: "Setup Node ${{ env.NODE_VERSION }}"
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ github.workspace }}/package.json
 
-                // Read checked legend nodes for a specific layer
-                $layerId = $oXmlReader->getAttribute('id');
-                $legendNodeDepth = $oXmlReader->depth;
-                $legendNodes = array();
+      - name: Install dependencies
+        working-directory: ./
+        run: |
+          npm ci
 
-                while ($oXmlReader->read()) {
-                    if ($oXmlReader->nodeType == \XMLReader::END_ELEMENT
-                        && $oXmlReader->localName == 'checked-legend-nodes'
-                        && $oXmlReader->depth == $legendNodeDepth) {
-                        break;
-                    }
+      - name: Install Playwright
+        working-directory: tests/end2end
+        run: |
+          npx playwright install --with-deps chromium
 
-                    if ($oXmlReader->nodeType == \XMLReader::ELEMENT
-                        && $oXmlReader->localName == 'checked-legend-node') {
-                        $legendNodes[] = $oXmlReader->getAttribute('id');
-                    }
-                }
+      - name: Run Playwright tests tagged "@requests" and "@readonly"
+        id: test-playwright-requests
+        working-directory: tests/end2end
+        env:
+          CRTF_JSON_FILE: playwright-tagged-requests.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: tests-results-requests.json
+        run: |
+          npx playwright test --grep "(?=.*@requests)(?=.*@readonly)" ${{ env.PLAYWRIGHT_OPTIONS }}
 
-                if (!empty($legendNodes)) {
-                    $data['checkedLegendNodes'][$layerId] = $legendNodes;
-                }
-            }
-        }
+      - name: Run Playwright tests tagged "@readonly"
+        id: test-playwright-read-only
+        working-directory: tests/end2end
+        env:
+          CRTF_JSON_FILE: playwright-tagged-readonly.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: tests-results-readonly.json
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success'
+        run: |
+          npx playwright test --grep @readonly --grep-invert @requests ${{ env.PLAYWRIGHT_OPTIONS }}
 
-        return new ProjectVisibilityPreset($data);
-    }
+      - name: Prepare the database diff from Playwright "@readonly" tests
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success'
+        run: |
+          ./lizmap-ctl dump-pgsql
+          git diff --exit-code qgis-projects/tests/tests_dataset.sql
+          db_diff=$?
+          echo "db_diff=${db_diff}" >> "$GITHUB_OUTPUT"
+          if [[ -z ${db_diff} ]]; then
+                echo "No updated files 👍"
+          else
+                echo "Updated files"
+                git diff qgis-projects/tests/tests_dataset.sql > qgis-projects/tests/tests_dataset.patch
+                git restore qgis-projects/tests/tests_dataset.sql
+                echo "::warning Git status is not clean after running tests about the DB"
+                exit 0
+          fi
 
-    /**
-     * Retrieve the object data as an array keyed by preset name.
-     *
-     * @return array<string, array<string, mixed>>
-     */
-    // FIX 5: Restore toKeyArray() method required by unit tests.
-    public function toKeyArray(): array
-    {
-        return array(
-            $this->name => array(
-                'layers' => $this->layers,
-                'checkedGroupNodes' => $this->checkedGroupNodes,
-                'expandedGroupNodes' => $this->expandedGroupNodes,
-                'checkedLegendNodes' => $this->checkedLegendNodes,
-            ),
-        );
-    }
-}
+      - name: Upload DB results
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success'
+        uses: actions/upload-artifact@master
+        with:
+          name: ${{ matrix.name }}-DB-diff-read-only
+          if-no-files-found: 'ignore'
+          path: |
+            ${{ github.workspace }}/tests/qgis-projects/tests/tests_dataset.patch
+
+      - name: Check about updated files after read only tests
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success'
+        run: |
+          if [[ -z $(git status --porcelain -uno) ]]; then
+              echo "No updated files 👍"
+          else
+              echo "Updated files"
+              git status
+              echo "::warning Git status is not clean after running tests about tracked files"
+          fi
+
+      - name: Run Playwright tests tagged neither "@readonly" nor "@write"
+        id: test-playwright-no-tag
+        working-directory: tests/end2end
+        env:
+          CRTF_JSON_FILE: playwright-no-tag.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: tests-results-no-tag.json
+        if: |
+          steps.qgis-server-status.outcome == 'success' &&
+          ( success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' )
+        run: |
+          npx playwright test --workers 1 --grep-invert "(?=.*@write|.*@readonly)" ${{ env.PLAYWRIGHT_OPTIONS }}
+
+      - name: Run Playwright tests tagged "@write"
+        id: test-playwright-write
+        working-directory: tests/end2end
+        env:
+          CRTF_JSON_FILE: playwright-tagged-write.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: tests-results-write.json
+        if: |
+          steps.qgis-server-status.outcome == 'success' &&
+          ( success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' )
+        run: |
+          npx playwright test --workers 1 --grep @write ${{ env.PLAYWRIGHT_OPTIONS }}
+
+      - name: Debug
+        if: always()
+        working-directory: tests
+        run: |
+          find . -type d -name "test-results"
+          echo $GITHUB_WORKSPACE
+          echo ${{ github.workspace }}
+          echo ${{ github.workspace }}/tests/end2end/test-results/
+          ls -l $GITHUB_WORKSPACE/tests/end2end/test-results/
+          ls ${{ github.workspace }}/tests/end2end/test-results/
+
+      - name: Send screenshots if necessary about all Playwright tests, if one failed
+        if: |
+          failure() &&
+          ( steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' ||
+          steps.test-playwright-write.outcome != 'success' )
+        uses: actions/upload-artifact@master
+        with:
+          name: ${{ matrix.name }}-screenshots-readonly
+          if-no-files-found: 'ignore'
+          path: |
+            ${{ github.workspace }}/tests/end2end/test-results/
+
+      - name: Publish test report
+        continue-on-error: true
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' ||
+          steps.test-playwright-write.outcome != 'success'
+        uses: ctrf-io/github-test-reporter@v1.0.22
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_HUB_TOKEN || github.token  }}
+        with:
+          report-path: './tests/end2end/ctrf/*.json'
+          summary-report: true
+          flaky-report: true
+          flaky-rate-report: true
+          summary: true
+          title: All Playwright tests ${{ matrix.NAME }}
+          failed-report: true
+          # pull-request-report: true
+          pull-request: true
+          # annotate: false
+          update-comment: true
+          overwrite-comment: false
+          comment-tag: '${{ github.workflow }}-${{ github.job }}'
+
+      - name: Upload test results
+        if: |
+          success() ||
+          steps.test-playwright-requests.outcome != 'success' ||
+          steps.test-playwright-read-only.outcome != 'success' ||
+          steps.test-playwright-no-tag.outcome != 'success' ||
+          steps.test-playwright-write.outcome != 'success'
+        uses: actions/upload-artifact@master
+        with:
+          if-no-files-found: 'ignore'
+          name: ${{ matrix.name }}-playwright-report
+          path: ${{ github.workspace }}/tests/end2end/playwright-report
+
+      - name: Export some logs to files
+        if: always()
+        run: |
+          mkdir -p /tmp/e2e/lwc
+          mkdir -p /tmp/e2e/docker
+          # I comandi docker logs usano | true per ignorare errori se i container sono già fermi
+          docker logs lizmap${{ env.LZMBRANCH }}_test_qgis &> /tmp/e2e/docker/qgis-server.log | true
+          docker logs lizmap${{ env.LZMBRANCH }}_test_php &> /tmp/e2e/docker/php.log | true
+          docker logs lizmap${{ env.LZMBRANCH }}_test_nginx &> /tmp/e2e/docker/nginx.log | true
+          # Rimosso: cp -r ../lizmap/var/log /tmp/e2e/lwc/ (causava l'errore 'No such file or directory')
+
+      - name: Upload all logs as artifact
+        uses: actions/upload-artifact@master
+        if: always()
+        with:
+          name: ${{ matrix.name }}-E2E-all-logs
+          path: |
+            /tmp/e2e/
+
+      - name: Database diff check after readonly tests
+        run:
+          exit ${{ env.db_diff }}
